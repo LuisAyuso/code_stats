@@ -104,10 +104,22 @@ fn cyclomatic_complexity(stmt: &clang::Entity) -> (u32, u32) {
     }
 }
 
-fn get_file_location(node: &clang::Entity) -> Result<String, ()>{
+fn get_file_location(node: &clang::Entity) -> Result<String, ()> {
     let loc = node.get_location().unwrap();
     let loc = loc.get_spelling_location().file.unwrap().get_path();
     Ok(loc.to_str().unwrap().to_string())
+}
+
+fn get_filename(path: &String) -> Option<&str> {
+    use std::path;
+    let path = path::Path::new(path.as_str());
+    path.file_name().map(|osstr| osstr.to_str()).unwrap()
+}
+
+fn get_module(path: &String) -> Option<&str> {
+    use std::path;
+    let path = path::Path::new(path.as_str());
+    path.parent().unwrap().to_str()
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +136,8 @@ impl ProcessCtx {
         }
 
         let loc = get_file_location(fun).unwrap_or("no_location".to_string());
+        let file = get_filename(&loc).unwrap();
+        let module = get_module(&loc).unwrap();
         let name = self.get_qualified_name(fun);
         let lines = count_lines(fun.get_range().unwrap());
 
@@ -136,7 +150,10 @@ impl ProcessCtx {
         let (n, e) = cyclomatic_complexity(&body);
         let comp = e - n; // using simplied formula, avoid (+ 2p);
 
-        println!("{:60}\t{:80}\t{}\t{}\t{}", loc, name, arg_count, lines, comp);
+        println!(
+            "{:60}\t{:20}\t{:80}\t{}\t{}\t{}",
+            module, file, name, arg_count, lines, comp
+        );
     }
 
     fn process_named_nested(&self, node: &clang::Entity) {
@@ -150,20 +167,19 @@ impl ProcessCtx {
             |node: clang::Entity, _parent: clang::Entity| -> clang::EntityVisitResult {
                 let x = node.get_location();
                 if let Some(loc) = x {
-
-                        match (&self.header_regex, get_file_location(&node)){
-                            (Some(ref r), Ok(ref path)) =>{
-                                if !r.is_match(path.as_str()){
-                                    return clang::EntityVisitResult::Continue;
-                                }
-                            },
-                            (None, _) => {
-                                if !loc.is_in_main_file() {
-                                    return clang::EntityVisitResult::Continue;
-                                }
+                    match (&self.header_regex, get_file_location(&node)) {
+                        (Some(ref r), Ok(ref path)) => {
+                            if !r.is_match(path.as_str()) {
+                                return clang::EntityVisitResult::Continue;
                             }
-                            (_, _) => {}
                         }
+                        (None, _) => {
+                            if !loc.is_in_main_file() {
+                                return clang::EntityVisitResult::Continue;
+                            }
+                        }
+                        (_, _) => {}
+                    }
                 } else {
                     return clang::EntityVisitResult::Continue;
                 }
@@ -229,12 +245,16 @@ impl ProcessCtx {
 }
 
 fn print_header() {
-    let loc = "location";
+    let module = "module";
+    let file = "file";
     let name = "name";
     let arg_count = "args";
     let lines = "lines";
     let comp = "McCabe";
-    println!("{:60}\t{:80}\t{}\t{}\t{}", loc, name, arg_count, lines, comp);
+    println!(
+        "{:60}\t{:20}\t{:80}\t{}\t{}\t{}",
+        module, file, name, arg_count, lines, comp
+    );
 }
 
 fn process_file(file: &str, args: &[&str], hr: Option<String>) {
