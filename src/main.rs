@@ -1,3 +1,5 @@
+extern crate regex;
+
 extern crate clang;
 
 #[macro_use]
@@ -102,9 +104,16 @@ fn cyclomatic_complexity(stmt: &clang::Entity) -> (u32, u32) {
     }
 }
 
+fn get_file_location(node: &clang::Entity) -> Result<String, ()>{
+    let loc = node.get_location().unwrap();
+    let loc = loc.get_spelling_location().file.unwrap().get_path();
+    Ok(loc.to_str().unwrap().to_string())
+}
+
 #[derive(Clone, Debug)]
 struct ProcessCtx {
     namespaces: String,
+    header_regex: Option<regex::Regex>,
 }
 
 impl ProcessCtx {
@@ -114,6 +123,7 @@ impl ProcessCtx {
             return;
         }
 
+        let loc = get_file_location(fun).unwrap_or("no_location".to_string());
         let name = self.get_qualified_name(fun);
         let lines = count_lines(fun.get_range().unwrap());
 
@@ -126,10 +136,10 @@ impl ProcessCtx {
         let (n, e) = cyclomatic_complexity(&body);
         let comp = e - n; // using simplied formula, avoid (+ 2p);
 
-        println!("{:80}\t{}\t{}\t{}", name, arg_count, lines, comp);
+        println!("{:60}\t{:80}\t{}\t{}\t{}", loc, name, arg_count, lines, comp);
     }
 
-    fn process_named_nested(&self, node: &clang::Entity){
+    fn process_named_nested(&self, node: &clang::Entity) {
         let mut new_ctx = self.clone();
         new_ctx.push_name(node.get_name().unwrap_or("anonymous".to_string()));
         new_ctx.process_node(&node);
@@ -140,9 +150,20 @@ impl ProcessCtx {
             |node: clang::Entity, _parent: clang::Entity| -> clang::EntityVisitResult {
                 let x = node.get_location();
                 if let Some(loc) = x {
-                    if !loc.is_in_main_file() {
-                        return clang::EntityVisitResult::Continue;
-                    }
+
+                        match (&self.header_regex, get_file_location(&node)){
+                            (Some(ref r), Ok(ref path)) =>{
+                                if !r.is_match(path.as_str()){
+                                    return clang::EntityVisitResult::Continue;
+                                }
+                            },
+                            (None, _) => {
+                                if !loc.is_in_main_file() {
+                                    return clang::EntityVisitResult::Continue;
+                                }
+                            }
+                            (_, _) => {}
+                        }
                 } else {
                     return clang::EntityVisitResult::Continue;
                 }
@@ -151,19 +172,19 @@ impl ProcessCtx {
                     clang::EntityKind::Namespace => {
                         self.process_named_nested(&node);
                         clang::EntityVisitResult::Continue
-                    },
+                    }
                     clang::EntityKind::ClassDecl => {
                         self.process_named_nested(&node);
                         clang::EntityVisitResult::Continue
-                    },
+                    }
                     clang::EntityKind::UnionDecl => {
                         self.process_named_nested(&node);
                         clang::EntityVisitResult::Continue
-                    },
+                    }
                     clang::EntityKind::StructDecl => {
                         self.process_named_nested(&node);
                         clang::EntityVisitResult::Continue
-                    },
+                    }
                     clang::EntityKind::FunctionDecl => {
                         self.process_fn(&node);
                         clang::EntityVisitResult::Continue
@@ -189,8 +210,8 @@ impl ProcessCtx {
     fn get_qualified_name(&self, node: &clang::Entity) -> String {
         let mut name = node.get_name().unwrap();
 
-        if node.get_kind() == clang::EntityKind::Method{
-            for c in node.get_children(){
+        if node.get_kind() == clang::EntityKind::Method {
+            for c in node.get_children() {
                 if c.is_reference() {
                     let r = c.get_reference().unwrap();
                     let class_name = r.get_name().unwrap();
@@ -207,31 +228,32 @@ impl ProcessCtx {
     }
 }
 
-fn process_file(file: &str, args: &[&str]) {
+fn print_header() {
+    let loc = "location";
+    let name = "name";
+    let arg_count = "args";
+    let lines = "lines";
+    let comp = "McCabe";
+    println!("{:60}\t{:80}\t{}\t{}\t{}", loc, name, arg_count, lines, comp);
+}
+
+fn process_file(file: &str, args: &[&str], hr: Option<String>) {
     let clang = clang::Clang::new().unwrap();
     let index = clang::Index::new(&clang, false, false);
 
-    println!("{}", file);
-    //println!("{:?}", args);
     let tu = index
         .parser(file)
         .arguments(args)
         .parse()
         .expect("should parse");
 
+    let header_rex = hr.map(|s| regex::Regex::new(s.as_str()).unwrap());
     let ctx = ProcessCtx {
         namespaces: String::new(),
+        header_regex: header_rex,
     };
 
-    {
-        let name = "name";
-        let arg_count = "args";
-        let lines = "lines";
-        let comp = "McCabe";
-        println!("{:80}\t{}\t{}\t{}", name, arg_count, lines, comp);
-
-        ctx.process_node(&tu.get_entity());
-    }
+    ctx.process_node(&tu.get_entity());
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -246,6 +268,8 @@ fn main() {
     let args = std::env::args();
     let arguments = arguments::parse(args).unwrap();
 
+    let headers = arguments.get::<String>("headers");
+
     if let Some(conf) = arguments.get::<String>("conf") {
         use std::fs::File;
         use std::io::BufReader;
@@ -254,17 +278,24 @@ fn main() {
         let reader = BufReader::new(file);
         let comp_db: Vec<CompilationEntry> = serde_json::from_reader(reader).unwrap();
 
+        print_header();
+
         for cfg in comp_db {
             let mut comp_args: Vec<&str> =
                 cfg.command.split(" ").filter(|s| !s.is_empty()).collect();
             comp_args.remove(0);
 
             let len = comp_args.len();
-            process_file(cfg.file.as_str(), &comp_args.as_slice()[0..len - 4]);
+            process_file(
+                cfg.file.as_str(),
+                &comp_args.as_slice()[0..len - 4],
+                headers.clone(),
+            );
         }
     }
 
     if let Some(file) = arguments.get::<String>("file") {
-        process_file(file.as_str(), &[]);
+        print_header();
+        process_file(file.as_str(), &[], headers.clone());
     }
 }
