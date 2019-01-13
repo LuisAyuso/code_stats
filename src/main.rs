@@ -264,7 +264,7 @@ struct CompilationEntry {
 }
 
 fn main() {
-    println!("using clang {}", clang::get_version());
+    eprintln!("using clang {}", clang::get_version());
     let args = std::env::args();
     let arguments = arguments::parse(args).unwrap();
 

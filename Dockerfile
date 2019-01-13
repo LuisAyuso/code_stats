@@ -1,6 +1,10 @@
-FROM ubuntu:18.04
+FROM frolvlad/alpine-rust
 
-RUN apt-get update && apt-get install -y \
-        libclang-dev \
-        cargo  \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache clang-dev
+
+#ENV LIBCLANG_PATH /usr/lib/llvm-6.0/lib/ 
+
+COPY . /code
+RUN cd /code && cargo build --release
+
+ENV PATH "/code/target/release/:${PATH}"
